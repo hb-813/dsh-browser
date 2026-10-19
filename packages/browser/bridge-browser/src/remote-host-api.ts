@@ -44,7 +44,27 @@ export interface TypertGatewayLike {
     readonly method: string
     readonly args: Readonly<Record<string, unknown>>
     readonly signal?: AbortSignal
+    /** dsh 0.2.1 requires a Peer; see bridgePeer(). */
+    readonly peer?: unknown
   }): Promise<unknown>
+}
+
+/**
+ * The Peer dsh 0.2.1 requires on every Gateway call.
+ *
+ * `Gateway.prepareInvocation` starts with `assertPeerLive(request.peer)`, which reads
+ * `peer.signal`, and `openRemoteEvents` additionally needs `peer.principal.kind === 'owner'`
+ * and `peer.interactions === 'answer'`. Omitting it throws
+ * "Cannot read properties of undefined (reading 'signal')" even though the handshake
+ * itself succeeded. The bridge is a local owner-side caller that answers interaction
+ * requests, so this is the correct Peer for it.
+ */
+function bridgePeer(signal: AbortSignal): {
+  signal: AbortSignal
+  principal: { kind: 'owner' }
+  interactions: 'answer'
+} {
+  return { signal, principal: { kind: 'owner' }, interactions: 'answer' }
 }
 
 /**
@@ -70,7 +90,18 @@ function openWireStream(gateway: TypertGatewayLike, endpoint: string, payload: u
   if (open.length === 3) {
     return open(endpoint, payload, signal)
   }
-  return open(endpoint, payload, EMPTY_WIRE_UPLINK, undefined, signal)
+  // dsh 0.2.1 requires a Peer in slot 4. Its Gateway reads `peer.signal`,
+  // `peer.principal.kind` ('owner' is required by openRemoteEvents) and
+  // `peer.interactions` (must be 'answer'). Passing undefined here makes hello
+  // succeed and then the forwarded $events stream fail (stream-failed / WS 1011
+  // "Cannot read properties of undefined (reading 'signal')"). The bridge is a
+  // local owner-side caller that does answer interaction requests, so this is its Peer.
+  const peer = {
+    signal,
+    principal: { kind: 'owner' as const },
+    interactions: 'answer' as const,
+  }
+  return open(endpoint, payload, EMPTY_WIRE_UPLINK, peer, signal)
 }
 
 /** Structural subset of dsh 0.2's Host Connection service. */
@@ -145,6 +176,7 @@ class RemoteHostApi implements BrowserHostApi {
         method: target.method,
         args: target.args,
         signal: call.signal,
+        peer: bridgePeer(call.signal),
       })
       // Only claim ownership after a successful create/prompt. A failed prompt
       // against a Desktop session must not steal later ask_user_question away
@@ -212,6 +244,7 @@ class RemoteHostApi implements BrowserHostApi {
             },
           },
           signal: call.signal,
+          peer: bridgePeer(call.signal),
         })
         return { ok: true, value: historyPageValue(page) }
       }
@@ -233,10 +266,12 @@ class RemoteHostApi implements BrowserHostApi {
     try {
       const catalog = await this.gateway.invoke({
         namespace: 'session', method: 'modelCatalog', args: {}, signal: call.signal,
+        peer: bridgePeer(call.signal),
       })
       // Provisional Sessions request only the catalog and overlay their pending choice.
       const projections = sessionId === undefined ? undefined : await this.gateway.invoke({
         namespace: 'session', method: 'projections', args: { request: { sessionId } }, signal: call.signal,
+        peer: bridgePeer(call.signal),
       })
       const values = isRecord(projections) ? projections.values : undefined
       const modelSelection = isRecord(values) ? values.modelSelection : undefined

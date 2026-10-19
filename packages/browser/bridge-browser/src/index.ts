@@ -242,8 +242,28 @@ function mountBridge(
   const configRoute: WebRoute = {
     kind: 'exact',
     path: BRIDGE_CONFIG_PATH,
-    handler: (_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' })
+    handler: (req, res) => {
+      // The extension calls this from a chrome-extension:// origin, which is a
+      // cross-origin request. dsh 0.2.1's webserver does not add CORS headers, so
+      // without these the fetch dies with "TypeError: Failed to fetch" and
+      // probeBridge() returns false -> the extension silently never opens the
+      // WebSocket (side panel shows 未连接 with no error). Private Network Access
+      // also requires its own allow header on the preflight.
+      const cors: Record<string, string> = {
+        'content-type': 'application/json',
+        'access-control-allow-origin': '*',
+        'access-control-allow-private-network': 'true',
+        'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+        'access-control-allow-headers': '*',
+        'cache-control': 'no-store',
+      }
+      const method = (req as { method?: string } | undefined)?.method ?? 'GET'
+      if (method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+      res.writeHead(200, cors)
       res.end(JSON.stringify({ wsUrl: `ws://127.0.0.1:${ctx.webServer.port}${BRIDGE_PATH}` }))
     },
   }
